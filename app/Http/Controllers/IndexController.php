@@ -4,12 +4,30 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Session;
 
 class IndexController extends Controller
 {
     public function index(Request $request)
     {
         try {
+            // Check if this is the first interaction
+            if (!Session::has('chat_started')) {
+                Session::put('chat_started', true);
+                return response()->json([
+                    'status' => 'success',
+                    'data' => [
+                        'choices' => [
+                            [
+                                'message' => [
+                                    'content' => "Hello! I'm your Medical assistant. How can I help you today?"
+                                ]
+                            ]
+                        ]
+                    ]
+                ]);
+            }
+
             // Validate the incoming request
             $request->validate([
                 'message' => 'required|string',
