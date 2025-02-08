@@ -8,6 +8,6 @@ Route::get('/', function () {
     return ['Laravel' => app()->version()];
 });
 
-Route::get('/chat', [IndexController::class, 'index']);
+Route::any('/chat', [IndexController::class, 'index']);
 
 require __DIR__.'/auth.php';
