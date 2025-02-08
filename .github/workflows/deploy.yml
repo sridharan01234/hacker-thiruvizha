@@ -1,0 +1,72 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1 # Change to your region
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: mbstring, xml, ctype, iconv, intl, pdo_mysql, bcmath, zip
+        
+    - name: Copy .env
+      run: php -r "file_exists('.env') || copy('.env.example', '.env');"
+      
+    - name: Install Dependencies
+      run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist
+      
+    - name: Generate key
+      run: php artisan key:generate
+      
+    - name: Configure SSH
+      run: |
+        mkdir -p ~/.ssh/
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        cat >>~/.ssh/config <<END
+        Host target
+          HostName $EC2_HOST
+          User $EC2_USERNAME
+          IdentityFile ~/.ssh/deploy_key
+          StrictHostKeyChecking no
+        END
+        
+    - name: Deploy to EC2
+      run: |
+        # Create deployment directory
+        ssh target 'mkdir -p ~/app'
+        
+        # Copy project files
+        rsync -avz --exclude '.git*' \
+                   --exclude 'node_modules' \
+                   --exclude 'vendor' \
+                   --exclude 'storage/framework/cache/*' \
+                   --exclude 'storage/framework/sessions/*' \
+                   --exclude 'storage/framework/views/*' \
+                   --exclude 'storage/logs/*' \
+                   ./ target:~/app/
+                   
+        # Install dependencies and set up on server
+        ssh target 'cd ~/app && \
+          composer install --no-dev --optimize-autoloader && \
+          php artisan config:cache && \
+          php artisan route:cache && \
+          php artisan view:cache && \
+          php artisan migrate --force && \
+          sudo chown -R www-data:www-data storage bootstrap/cache && \
+          sudo systemctl restart php8.1-fpm && \
+          sudo systemctl restart nginx'
