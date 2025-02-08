@@ -12,45 +12,66 @@ class IndexController extends Controller
     public function index(Request $request)
     {
         try {
+            // Initialize message history in session if it doesn't exist
+            if (!Session::has('message_history')) {
+                Session::put('message_history', []);
+            }
+    
             // Check if this is the first interaction
             if (!Session::has('chat_started')) {
                 Session::put('chat_started', true);
+                $initialMessage = [
+                    'role' => 'assistant',
+                    'content' => "Hello! I'm your Medical assistant. How can I help you today?"
+                ];
+                
+                // Store initial message in history
+                Session::put('message_history', [$initialMessage]);
+    
                 return response()->json([
                     'status' => 'success',
                     'data' => [
                         'choices' => [
                             [
                                 'message' => [
-                                    'content' => "Hello! I'm your Medical assistant. How can I help you today?"
+                                    'content' => $initialMessage['content']
                                 ]
                             ]
                         ]
                     ]
                 ]);
             }
-
+    
             // Validate the incoming request
             $request->validate([
                 'message' => 'required|string',
             ]);
-
+    
+            // Get current message history
+            $messageHistory = Session::get('message_history', []);
+            
+            // Add user's new message to history
+            $userMessage = [
+                'role' => 'user',
+                'content' => $request->message
+            ];
+            $messageHistory[] = $userMessage;
+    
+            // Keep only last 4 messages
+            $messageHistory = array_slice($messageHistory, -4);
+    
             // Get the API endpoint from environment variable
             $apiEndpoint = env('LOCAL_AI_ENDPOINT', 'http://localhost:1234/v1/chat/completions');
-
+    
             // Retry logic with exponential backoff
-            $response = retry(3, function () use ($apiEndpoint, $request) {
-                return Http::timeout(180) // Timeout set to 180 seconds
+            $response = retry(3, function () use ($apiEndpoint, $messageHistory) {
+                return Http::timeout(180)
                     ->withHeaders([
                         'Accept' => 'application/json',
                         'Content-Type' => 'application/json',
                     ])
                     ->post($apiEndpoint, [
-                        'messages' => [
-                            [
-                                'role' => 'user',
-                                'content' => $request->message,
-                            ]
-                        ],
+                        'messages' => $messageHistory,
                         'context' => [
                             'session_id' => Session::getId(),
                         ],
@@ -59,26 +80,41 @@ class IndexController extends Controller
                         'top_p' => env('AI_TOP_P', 1),
                         'frequency_penalty' => env('AI_FREQUENCY_PENALTY', 0),
                         'presence_penalty' => env('AI_PRESENCE_PENALTY', 0),
-                        'stop' => env('AI_STOP', ['\n']), // Stop on newline character
+                        'stop' => env('AI_STOP', ['\n']),
                         'stream' => false,
                         'model' => env('AI_MODEL_NAME', 'default-model'),
                     ]);
             }, 500);
-
-            // Check if the response was successful
+    
             if ($response->successful()) {
                 try {
-                    return response()->json([
-                        'status' => 'success',
-                        'messages' => $response->json('choices.0.message') ?? null
-                    ]);
+                    $assistantMessage = $response->json('choices.0.message');
+                    
+                    if ($assistantMessage) {
+                        // Add assistant's response to history
+                        $messageHistory[] = [
+                            'role' => 'assistant',
+                            'content' => $assistantMessage['content']
+                        ];
+                        
+                        // Keep only last 4 messages
+                        $messageHistory = array_slice($messageHistory, -4);
+                        
+                        // Update session with new history
+                        Session::put('message_history', $messageHistory);
+    
+                        return response()->json([
+                            'status' => 'success',
+                            'messages' => $assistantMessage
+                        ]);
+                    }
                 } catch (\Exception $e) {
                     return response()->json([
                         'status' => 'error',
                         'message' => 'Failed to process response data'
                     ], 500);
                 }
-            }            
+            }     
 
             // Log the error response for debugging
             Log::error('AI Service Error', [
